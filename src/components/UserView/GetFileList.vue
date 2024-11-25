@@ -13,11 +13,11 @@
     <el-alert
       :closable="false"
       class="alert"
-      :title="`当前中转账号充足`"
+      :title="`当前解析状态：正常可用！冲鸭！！！`"
       type="success"
       v-if="config.have_account"
     />
-    <el-alert :closable="false" class="alert" :title="`当前中转账号不足`" type="error" v-else />
+    <el-alert :closable="false" class="alert" :title="`当前解析状态：已失效，等修复！`" type="error" v-else />
 
     <el-alert
       class="alert"
@@ -112,33 +112,73 @@
         <el-button type="primary" @click="fileListStore.getFileList()">获取/刷新列表</el-button>
         <el-button
           type="primary"
-          :disabled="selectedRows.length <= 0"
+          v-if="shouldShowBatchButton"
           @click="fileListStore.getDownloadLinks()"
         >
           批量解析
         </el-button>
-        <el-button type="primary" @click="copyLink(getFileListFormRef)">复制当前地址</el-button>
-        <el-button type="primary" v-if="downloadLinks.length !== 0" @click="dialogVisible = true">
-          重新显示下载链接
+        <el-button
+          type="primary"
+          v-if="shouldShowAdButton && getLoginRole() !== 'admin'"
+          @click="showAdPrompt"
+        >
+          看广告免费解析(输入可卡密可免广告)
         </el-button>
         <el-button type="primary" v-if="config.button_link !== ''" @click="go(config.button_link)">
           前往购买卡密
         </el-button>
         <template v-if="config.show_login_button">
-          <el-button type="primary" @click="goLogin()" v-if="getLoginState() === '0'"
-            >登陆</el-button
-          >
+          <el-button type="primary" @click="goLogin()" v-if="getLoginState() === '0'">登陆</el-button>
           <template v-if="getLoginState() === '1'">
-            <el-button type="primary" @click="goAdmin()" v-if="getLoginRole() === 'admin'">
-              进入后台
-            </el-button>
+            <el-button type="primary" @click="goAdmin()" v-if="getLoginRole() === 'admin'">进入后台</el-button>
             <el-button type="danger" @click="mainStore.logout()"> 注销 </el-button>
           </template>
         </template>
       </el-form-item>
     </el-form>
+    
+    <el-card v-loading="pending">
+      <div class="instructions">
+        <h3>使用说明</h3>
+        <p>简易使用说明：</p> 
+        <p>输入网盘链接→点击【获取/刷新列表】→选中需要下载的文件→看广告或输入卡密→点击【批量解析】→下载 motrix并打开和设置下载配置→点击【发送 Aria2】→等待下载完成</p> 
+        <p>如果还是不会用，点击右边链接查看
+          <a href="https://blog.91ios.fun/1954.html" target="_blank">详细使用说明</a>。
+        </p>
+      </div>
+    </el-card>
   </el-card>
 </template>
+
+<style scoped>
+.instructions {
+  padding: 20px;
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.instructions h3 {
+  color: #2c3e50;
+  margin-bottom: 10px;
+}
+
+.instructions ol {
+  padding-left: 20px;
+}
+
+.instructions li {
+  margin: 10px 0;
+}
+
+.instructions a {
+  color: #409eff;
+  text-decoration: none;
+}
+
+.instructions a:hover {
+  text-decoration: underline;
+}
+</style>
 
 <script lang="ts" setup>
 import { useFileListStore } from '@/stores/fileListStore.js'
@@ -150,8 +190,10 @@ import { isMobile } from '@/utils/isMobile.js'
 import type { RuleItem } from 'async-validator'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { storeToRefs } from 'pinia'
-import { nextTick, onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
+import Swal from 'sweetalert2'
+import CryptoJS from 'crypto-js'
 
 const position = ref('right')
 if (isMobile()) position.value = 'top'
@@ -170,6 +212,124 @@ const {
 } = storeToRefs(fileListStore)
 const mainStore = useMainStore()
 const { config } = storeToRefs(mainStore)
+
+const adsWatched = ref(false) // Signal to track if ads are watched
+
+// Boolean that determines if the batch parse button should be shown
+const shouldShowBatchButton = computed(() => {
+  return (getLoginRole() === 'admin' || adsWatched.value || (isToken.value && limitMessage.value === ''))
+})
+
+// Boolean to determine if the ad button should be shown
+const shouldShowAdButton = computed(() => {
+  return !adsWatched.value && getLoginRole() !== 'admin' && (limitForm.value.group_name === '游客分组' || (!isToken.value && limitMessage.value === ''))
+})
+
+const uid = 1 // 示例UID，请替换为实际值
+const secret = "sdg45ffhxxfgsfgd" // 用户签名密钥，请替换为实际值
+const maxAdsPerDay = 5 // 每日最多观看广告次数
+
+const showAdPrompt = () => {
+  const adid = generateAdID()
+  const key = generateKey(uid, secret, adid)
+
+  fetch('https://ad.91ios.fun/api/create.php', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: new URLSearchParams({ uid: uid.toString(), adid, key })
+  })
+    .then(response => response.json())
+    .then(data => {
+      if (data.code === 200) {
+        const ticket = data.link
+        const query = encodeURIComponent(data.query)
+        const wxLink = `${ticket}&query=${query}`
+
+        const userAgent = navigator.userAgent.toLowerCase()
+        const isMobile = /iphone|ipod|android|blackberry|iemobile|opera mini/i.test(userAgent)
+        let htmlContent
+
+        if (isMobile) {
+          htmlContent = `<p>1.微信小程序看完广告后可免费解析。</p><p>2.看1次广告可以解析1次，每日上限5次。</p><p>3.解析不够可以直接购买天卡，次数、大小不限量。</p><a href="${wxLink}" target="_blank" style="color: blue;">点击观看广告解锁</a>`
+        } else {
+          const redirectTo = encodeURIComponent(`https://ad.91ios.fun/api/h5.html?wxLink=${wxLink}`)
+          const qrCodeURL = `https://api.qrserver.com/v1/create-qr-code/?data=${redirectTo}&size=150x150`
+          htmlContent = `<p>微信扫码观看广告后可免费解析</p><div style="display: flex; justify-content: center; align-items: center;"><img src="${qrCodeURL}" width="150" height="150"></div><p>1.激励视频广告需播放完毕才能加速。</p><p>2.看1次广告可以解析1次，每日上限5次。</p><p> 3.解析次数不够用可以直接购买天卡，次数、大小不限量。</p>`
+        }
+
+        Swal.fire({
+          html: htmlContent,
+          showConfirmButton: false,
+          showCancelButton: false,
+          allowOutsideClick: false,
+          allowEscapeKey: false
+        })
+
+        const adCheckInterval = setInterval(() => {
+          fetch('https://ad.91ios.fun/api/check.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ uid: uid.toString(), adid, key })
+          })
+            .then(response => response.json())
+            .then(checkData => {
+              if (checkData.code === 200) {
+                clearInterval(adCheckInterval)
+                Swal.fire({
+                  title: '广告观看完成，感谢您的支持',
+                  icon: 'success',
+                  showConfirmButton: false,
+                  timer: 2000
+                }).then(() => {
+                  adsWatched.value = true // 设置广告已观看
+                  fileListStore.getDownloadLinks() // 执行批量解析
+                })
+              } else if (checkData.code === 500) {
+                clearInterval(adCheckInterval)
+                Swal.fire({
+                  title: '广告不存在或加载失败，请重试',
+                  icon: 'error',
+                  showConfirmButton: true,
+                  timer: 2000
+                })
+              }
+            })
+            .catch(error => {
+              console.error('Error checking ad status:', error)
+            })
+        }, 5000)
+      } else {
+        Swal.fire({
+          icon: 'error',
+          title: '加载广告失败，请稍后再试',
+          showConfirmButton: true,
+          timer: 1500
+        })
+      }
+    })
+    .catch(error => {
+      console.error('Failed to load ad:', error)
+      Swal.fire({
+        icon: 'error',
+        title: '加载广告失败，请稍后再试',
+        showConfirmButton: true,
+        timer: 1500
+      })
+    })
+}
+
+const generateAdID = () => {
+  const base = 'custom'
+  const timestamp = new Date().getTime()
+  const randomString = Math.random().toString(36).substring(2, 15)
+  return base + timestamp + randomString
+}
+
+const generateKey = (uid: number, secret: string, token: string) => {
+  return CryptoJS.MD5(uid + secret + token).toString()
+}
 
 const urlValidator: RuleItem['validator'] = (rule, value, callback) => {
   if (value === '') return callback(new Error('请先输入需要解析的链接'))
@@ -275,14 +435,21 @@ const clearLinks = () => (downloadLinks.value = [])
 
 const isToken = ref(false)
 const tokenBlur = () => {
-  if (getFileListForm.value.token !== '') {
-    isToken.value = true
-    localStorage.setItem('token', getFileListForm.value.token ?? '')
-  } else {
-    isToken.value = false
-    localStorage.removeItem('token')
-  }
-  fileListStore.getLimit()
+  fileListStore.getLimit().then(() => {
+    if (getFileListForm.value.token !== '') {
+      if (limitMessage.value === '') {
+        isToken.value = true
+        localStorage.setItem('token', getFileListForm.value.token ?? '')
+      } else {
+        isToken.value = false
+        localStorage.removeItem('token')
+        ElMessage.error('无效的卡密')
+      }
+    } else {
+      isToken.value = false
+      localStorage.removeItem('token')
+    }
+  })
 }
 </script>
 
@@ -309,4 +476,10 @@ a {
 .buttons .el-form-item__content {
   gap: 10px;
 }
+</style>
+
+<style>
+  .swal2-title {
+    font-size: 16px !important; 
+  }
 </style>
